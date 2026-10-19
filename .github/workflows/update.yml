@@ -1,7 +1,8 @@
 name: Free portal update
 on:
   schedule:
-    - cron: '2 0,8 * * *' # 09:02 and 17:02 JST; GitHub may delay dispatch.
+    - cron: '2 0 * * *' # 09:02 JST: all portals
+    - cron: '2 8 * * *' # 17:02 JST: SUUMO and at home only
   workflow_dispatch:
 permissions: {}
 concurrency:
@@ -16,6 +17,7 @@ jobs:
     steps:
       - name: Run authenticated provider-free update
         env:
+          SKIP_HOMES: ${{ github.event_name == 'schedule' && github.event.schedule == '2 8 * * *' }}
           PORTAL_UPDATE_URL: ${{ secrets.PORTAL_UPDATE_URL }}
           PORTAL_UPDATE_TOKEN: ${{ secrets.PORTAL_UPDATE_TOKEN }}
           SITES_SERVICE_TOKEN: ${{ secrets.SITES_SERVICE_TOKEN }}
@@ -111,6 +113,8 @@ jobs:
                   for city in ([args.city] if args.city else ("amagasaki", "itami"))
                   for source in ([args.source] if args.source else ("SUUMO", "at home", "HOME'S"))
                   for kind in ([args.type] if args.type else ("土地", "戸建", "新築戸建", "マンション"))]
+              if os.environ.get("SKIP_HOMES") == "true":
+                  targets = [target for target in targets if target["source"] != "HOME'S"]
               return int(bool(run(endpoint, token, targets)))
           
           
