@@ -1,0 +1,123 @@
+name: Free portal update
+on:
+  schedule:
+    - cron: '2 0,8 * * *' # 09:02 and 17:02 JST; GitHub may delay dispatch.
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: portal-free-update
+  cancel-in-progress: false
+jobs:
+  update:
+    # A public, generic runner repository is required for free standard hosted runners.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    steps:
+      - name: Run authenticated provider-free update
+        env:
+          PORTAL_UPDATE_URL: ${{ secrets.PORTAL_UPDATE_URL }}
+          PORTAL_UPDATE_TOKEN: ${{ secrets.PORTAL_UPDATE_TOKEN }}
+          SITES_SERVICE_TOKEN: ${{ secrets.SITES_SERVICE_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          """Run the Site's fixed-source updater without an AI model or paid fetch provider."""
+          import argparse
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          
+          
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None  # Never forward the update credential to a redirect target.
+          
+          
+          def request(endpoint, token, body):
+              headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+              platform = os.environ.get("SITES_SERVICE_TOKEN", "")
+              if platform:
+                  headers["OAI-Sites-Authorization"] = "Bearer " + platform
+              req = urllib.request.Request(endpoint, json.dumps(body).encode(), headers, method="POST")
+              with urllib.request.build_opener(NoRedirect).open(req, timeout=85) as res:
+                  data = json.load(res)
+              if not data.get("freeOnly") or data.get("usesWork") is not False or data.get("usesPaidProvider") is not False:
+                  raise ValueError("Endpoint did not confirm provider-free, AI-free execution")
+              return data
+          
+          
+          def run(endpoint, token, targets, call=request, pause=time.sleep, clock=time.monotonic):
+              deadline = clock() + 100 * 60
+              failures = []
+              for target in targets:
+                  busy = 0
+                  for step in range(100):
+                      if clock() >= deadline:
+                          raise RuntimeError("Runtime cap reached; saved checkpoints remain available")
+                      try:
+                          result = call(endpoint, token, target)
+                      except urllib.error.HTTPError as exc:
+                          if exc.code in (401, 403):
+                              raise RuntimeError("Updater authentication failed") from None
+                          # A transport error may follow a committed write: stop rather than restart blindly.
+                          raise RuntimeError("Updater HTTP error; inspect saved status before resuming") from None
+                      except (OSError, ValueError):
+                          raise RuntimeError("Unconfirmed response; inspect saved status before resuming") from None
+                      print(json.dumps({**target, **{k: result.get(k) for k in
+                          ("status", "pages", "received", "detailsProcessed", "error")}}, ensure_ascii=False), flush=True)
+                      if result.get("status") == "success":
+                          break
+                      if result.get("retryable"):
+                          busy += 1
+                          if busy > 5:
+                              raise RuntimeError("Existing updater is busy; no parallel update was started")
+                          pause(10)
+                          continue
+                      busy = 0
+                      if result.get("status") == "in_progress" or result.get("continuation"):
+                          pause(1)
+                          continue
+                      failures.append(target)
+                      break
+                  else:
+                      failures.append(target)
+              return failures
+          
+          
+          def main():
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--check", action="store_true")
+              parser.add_argument("--city", choices=("amagasaki", "itami"))
+              parser.add_argument("--source", choices=("SUUMO", "HOME'S", "at home"))
+              parser.add_argument("--type", choices=("土地", "戸建", "新築戸建", "マンション"))
+              args = parser.parse_args()
+              endpoint = os.environ.get("PORTAL_UPDATE_URL", "")
+              token = os.environ.get("PORTAL_UPDATE_TOKEN", "")
+              url = urllib.parse.urlsplit(endpoint)
+              if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment or url.path != "/api/portal-free-update":
+                  raise RuntimeError("Set a valid HTTPS Site updater URL")
+              if len(token) < 48:
+                  raise RuntimeError("Set the update token as a secret")
+              if args.check:
+                  assert request(endpoint, token, {"mode": "check"})["ok"]
+                  print("Authenticated: Work and paid fetch provider are disabled")
+                  return 0
+              targets = [{"city": city, "source": source, "type": kind}
+                  for city in ([args.city] if args.city else ("amagasaki", "itami"))
+                  for source in ([args.source] if args.source else ("SUUMO", "at home", "HOME'S"))
+                  for kind in ([args.type] if args.type else ("土地", "戸建", "新築戸建", "マンション"))]
+              return int(bool(run(endpoint, token, targets)))
+          
+          
+          if __name__ == "__main__":
+              try:
+                  sys.exit(main())
+              except (RuntimeError, AssertionError) as exc:
+                  print(str(exc), file=sys.stderr)
+                  sys.exit(1)
+          PYTHON
