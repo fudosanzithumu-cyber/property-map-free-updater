@@ -1,8 +1,8 @@
 name: Free portal update
 on:
   schedule:
-    - cron: '2 0 * * *' # 09:02 JST: all portals
-    - cron: '2 8 * * *' # 17:02 JST: SUUMO and at home only
+    - cron: '2 0 * * *' # 09:02 JST: SUUMO and HOMES
+    - cron: '2 8 * * *' # 17:02 JST: SUUMO only
   workflow_dispatch:
 permissions: {}
 concurrency:
@@ -95,7 +95,7 @@ jobs:
               parser = argparse.ArgumentParser()
               parser.add_argument("--check", action="store_true")
               parser.add_argument("--city", choices=("amagasaki", "itami"))
-              parser.add_argument("--source", choices=("SUUMO", "HOME'S", "at home"))
+              parser.add_argument("--source", choices=("SUUMO", "HOME'S"))
               parser.add_argument("--type", choices=("土地", "戸建", "新築戸建", "マンション"))
               args = parser.parse_args()
               endpoint = os.environ.get("PORTAL_UPDATE_URL", "")
@@ -111,7 +111,7 @@ jobs:
                   return 0
               targets = [{"city": city, "source": source, "type": kind}
                   for city in ([args.city] if args.city else ("amagasaki", "itami"))
-                  for source in ([args.source] if args.source else ("SUUMO", "at home", "HOME'S"))
+                  for source in ([args.source] if args.source else ("SUUMO", "HOME'S"))
                   for kind in ([args.type] if args.type else ("土地", "戸建", "新築戸建", "マンション"))]
               if os.environ.get("SKIP_HOMES") == "true":
                   targets = [target for target in targets if target["source"] != "HOME'S"]
