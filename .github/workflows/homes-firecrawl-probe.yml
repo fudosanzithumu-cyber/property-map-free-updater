@@ -1,0 +1,36 @@
+name: HOME'S Firecrawl free probe
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/homes-firecrawl-probe.yml']
+  workflow_dispatch:
+permissions: {}
+jobs:
+  probe:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Test one page without API key or AI
+        run: |
+          python3 - <<'PYTHON'
+          import json, urllib.request, urllib.error, os
+          url='https://www.homes.co.jp/tochi/hyogo/amagasaki-city/list/'
+          body={'url':url,'formats':['rawHtml'],'onlyMainContent':False,'proxy':'basic','timeout':20000}
+          result={'usesWork':False,'usesAPIKey':False,'writesProperties':False}
+          req=urllib.request.Request('https://api.firecrawl.dev/v2/scrape',json.dumps(body).encode(),{'Content-Type':'application/json'},method='POST')
+          try:
+              with urllib.request.urlopen(req,timeout=90) as res:
+                  d=json.load(res);m=d.get('data',{}).get('metadata',{});html=d.get('data',{}).get('rawHtml','')
+                  ok=d.get('success') is True and m.get('statusCode')==200 and 'prg-mod-bukkenList' in html and '尼崎市' in html
+                  result.update(status='success' if ok else 'failed',httpStatus=res.status,originStatus=m.get('statusCode'),title=m.get('title'),htmlLength=len(html),creditsUsed=m.get('creditsUsed'),hasListingRoot='prg-mod-bukkenList' in html)
+          except urllib.error.HTTPError as e:
+              result.update(status='failed',httpStatus=e.code)
+          except Exception as e:
+              result.update(status='failed',error=type(e).__name__)
+          report=json.dumps(result,ensure_ascii=False,indent=2)
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write("## HOME'S Firecrawl free probe\n\n"+report)
+          if result['status']!='success':raise SystemExit(1)
+          PYTHON
