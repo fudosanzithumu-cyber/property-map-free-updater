@@ -1,0 +1,56 @@
+name: HOME'S browser probe
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/homes-browser-probe.yml']
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: homes-browser-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install browser
+        run: |
+          python3 -m pip install playwright==1.58.0
+          python3 -m playwright install --with-deps chromium
+      - name: Read one public HOME'S list page
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import asyncio, json, re, os
+          from urllib.parse import urlsplit
+          from playwright.async_api import async_playwright
+          async def main():
+              url = "https://www.homes.co.jp/tochi/hyogo/amagasaki-city/list/"
+              result = {"url": url, "usesWork": False, "writesProperties": False}
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page(locale="ja-JP")
+                  try:
+                      response = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                      await page.wait_for_timeout(3000)
+                      title = await page.title()
+                      text = await page.locator("body").inner_text(timeout=10000)
+                      final = urlsplit(page.url)
+                      links = await page.locator('a[href*="/tochi/b-"]').count()
+                      root = await page.locator("#prg-mod-bukkenList").count()
+                      blocked = bool(re.search(r"captcha|access denied|just a moment|verify.*human|アクセス.*制限|ロボット.*確認|メンテナンス|ただいま.*混み合", title + "\n" + text[:2000], re.I))
+                      ok = bool(response and response.status == 200 and final.hostname in ("www.homes.co.jp", "homes.co.jp") and final.path == urlsplit(url).path and "尼崎市" in text and root and links and not blocked)
+                      result.update(status="success" if ok else "blocked_or_unrecognized", httpStatus=response.status if response else None, title=title[:200], finalURL=page.url.split("?")[0], listingRoot=bool(root), landLinks=links, blocked=blocked)
+                  except Exception as e:
+                      result.update(status="failed", error=type(e).__name__ + ": " + str(e)[:300])
+                  finally:
+                      await browser.close()
+              report = json.dumps(result, ensure_ascii=False, indent=2)
+              print(report)
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write("## HOME'S browser probe\n\nRead-only; no AI or paid fetch service; no property updates.\n\n```json\n" + report + "\n```\n")
+              if result["status"] != "success":
+                  raise SystemExit(1)
+          asyncio.run(main())
+          PYTHON
