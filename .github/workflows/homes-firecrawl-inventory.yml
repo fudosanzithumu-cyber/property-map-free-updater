@@ -1,0 +1,48 @@
+name: HOME'S free inventory check
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/homes-firecrawl-inventory.yml']
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: python3 -m pip install beautifulsoup4
+      - name: Check eight first pages without AI or API key
+        run: |
+          python3 - <<'PYTHON'
+          import json,urllib.request,urllib.error,os,time,re
+          from bs4 import BeautifulSoup
+          results=[]
+          for city in ['amagasaki','itami']:
+              for kind,path in [('土地','tochi'),('戸建','kodate/chuko'),('新築戸建','kodate/shinchiku'),('マンション','mansion/chuko')]:
+                  url='https://www.homes.co.jp/'+path+'/hyogo/'+city+'-city/list/'
+                  body={'url':url,'formats':['rawHtml'],'onlyMainContent':False,'proxy':'basic','timeout':20000}
+                  req=urllib.request.Request('https://api.firecrawl.dev/v2/scrape',json.dumps(body).encode(),{'Content-Type':'application/json'},method='POST')
+                  r={'city':city,'type':kind}
+                  try:
+                      with urllib.request.urlopen(req,timeout=90) as response:d=json.load(response)
+                      m=d.get('data',{}).get('metadata',{});html=d.get('data',{}).get('rawHtml','')
+                      if not d.get('success') or m.get('statusCode')!=200:raise ValueError('Invalid list')
+                      soup=BeautifulSoup(html,'html.parser');root=soup.select_one('#prg-mod-bukkenList')
+                      totals=[x.get_text(strip=True) for x in soup.select('.mod-listPaging .totalNum')]
+                      hidden=[x.get('value') for x in soup.select('input[name="totalhits"],input[id="totalhits"]')]
+                      ids=set()
+                      if root:
+                          for a in root.select('a[href]'):
+                              found=re.search(r'/b-([0-9]+)/',a.get('href',''))
+                              if found:ids.add(found.group(1))
+                      r.update(status='success' if root and ids else 'unrecognized',totalLabels=totals,totalHits=hidden,firstPageListings=len(ids),creditsUsed=m.get('creditsUsed'))
+                  except urllib.error.HTTPError as e:r.update(status='failed',httpStatus=e.code)
+                  except Exception as e:r.update(status='failed',error=type(e).__name__)
+                  results.append(r);print(json.dumps(r,ensure_ascii=False),flush=True)
+                  if r['status']!='success':break
+                  time.sleep(8)
+              if results[-1]['status']!='success':break
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write(json.dumps(results,ensure_ascii=False,indent=2))
+          if len(results)!=8 or any(r['status']!='success' for r in results):raise SystemExit(1)
+          PYTHON
